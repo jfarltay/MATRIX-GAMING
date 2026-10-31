@@ -1,7 +1,0 @@
-      - name: Verify project
-        shell: bash
-        run: |
-          echo "Searching for Android project..."
-          find . -type f \( -name settings.gradle -o -name settings.gradle.kts \)
-          find . -type f \( -name build.gradle -o -name build.gradle.kts \)
-          find . -name gradlew -type f
