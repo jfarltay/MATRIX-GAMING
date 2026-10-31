@@ -1,0 +1,90 @@
+
+name: MATRIX GAMING - Android APK Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Locate or extract Android project
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK_DIR="$GITHUB_WORKSPACE"
+
+          if [[ ! -f "$WORK_DIR/settings.gradle" && ! -f "$WORK_DIR/settings.gradle.kts" ]]; then
+            SETTINGS="$(find "$WORK_DIR" -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
+              -not -path '*/.gradle/*' -not -path '*/build/*' -print -quit || true)"
+
+            if [[ -z "$SETTINGS" ]]; then
+              ZIP_FILE="$(find "$WORK_DIR" -maxdepth 4 -type f -iname '*.zip' -print -quit || true)"
+              if [[ -n "$ZIP_FILE" ]]; then
+                mkdir -p "$WORK_DIR/.matrix-project"
+                unzip -oq "$ZIP_FILE" -d "$WORK_DIR/.matrix-project"
+              fi
+              SETTINGS="$(find "$WORK_DIR" -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
+                -not -path '*/.gradle/*' -not -path '*/build/*' -print -quit || true)"
+            fi
+
+            if [[ -z "$SETTINGS" ]]; then
+              echo 'ERROR: No settings.gradle(.kts) found.' >&2
+              exit 1
+            fi
+            PROJECT_DIR="$(cd "$(dirname "$SETTINGS")" && pwd)"
+          else
+            PROJECT_DIR="$WORK_DIR"
+          fi
+
+          if [[ ! -f "$PROJECT_DIR/app/build.gradle" && ! -f "$PROJECT_DIR/app/build.gradle.kts" ]]; then
+            echo "ERROR: app/build.gradle(.kts) not found in $PROJECT_DIR" >&2
+            exit 1
+          fi
+
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Android project: $PROJECT_DIR"
+
+      - name: Build APK
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: gradle --no-daemon --stacktrace clean :app:assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK='${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk'
+          test -s "$APK"
+          echo "APK ready: $APK"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MATRIX-GAMING-APK
+          path: ${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
