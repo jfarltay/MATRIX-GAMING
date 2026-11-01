@@ -1,53 +1,101 @@
-name: MATRIX GAMING 5.0 - Diagnose
+name: MATRIX GAMING 5.0.2 - Android Build
 
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
+    paths:
+      - "**/*.gradle"
+      - "**/*.gradle.kts"
+      - "**/*.java"
+      - "**/*.xml"
+      - "**/*.png"
+      - ".github/workflows/**"
 
 permissions:
   contents: read
 
+concurrency:
+  group: matrix-gaming-android-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  diagnose:
+  build:
+    name: Build debug APK
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show repository structure
+      - name: Find Android project directory
         shell: bash
         run: |
-          echo "Repository root:"
-          pwd
-          echo "Files and folders:"
-          ls -la
-          echo "Gradle files:"
-          find . -type f \( \
-            -name "settings.gradle" -o \
-            -name "settings.gradle.kts" -o \
-            -name "build.gradle" -o \
-            -name "build.gradle.kts" -o \
-            -name "gradlew" \
-          \) -print
+          set -euo pipefail
+          mapfile -t projects < <(find . -type f -name settings.gradle -not -path './.git/*' -printf '%h\\n' | sort)
+          if [ "${#projects[@]}" -eq 0 ]; then
+            echo "::error::settings.gradle was not found. Upload the contents of MATRIX_GAMING_5.0_GAMING_OS into the repository, or keep the project folder in the repository."
+            exit 1
+          fi
+          if [ "${#projects[@]}" -gt 1 ]; then
+            echo "::error::More than one Android project was found. Keep only the intended MATRIX GAMING project or simplify the repository."
+            printf '%s\\n' "${projects[@]}"
+            exit 1
+          fi
+          PROJECT_DIR="${projects[0]#./}"
+          if [ "$PROJECT_DIR" = "." ]; then PROJECT_DIR="."; fi
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Using Android project directory: $PROJECT_DIR"
+          test -f "$PROJECT_DIR/build.gradle"
+          test -f "$PROJECT_DIR/app/build.gradle"
+          test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
 
-      - name: Setup Java
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Gradle
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
 
-      - name: Report project location
+      - name: Build debug APK
         shell: bash
         run: |
-          find . -type f \( \
-            -name "settings.gradle" -o \
-            -name "settings.gradle.kts" \
-          \) -print
+          set -euo pipefail
+          gradle --no-daemon --stacktrace -p "$PROJECT_DIR" clean :app:assembleDebug
+
+      - name: Verify APK exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -s "$APK" ]; then
+            echo "::error::Build finished but app-debug.apk was not found."
+            find "$PROJECT_DIR/app/build/outputs" -maxdepth 5 -type f -print 2>/dev/null || true
+            exit 1
+          fi
+          ls -lh "$APK"
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MATRIX-GAMING-5.0.2-debug-APK
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
