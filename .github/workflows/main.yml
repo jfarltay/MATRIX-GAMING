@@ -1,0 +1,58 @@
+
+      - name: Extract and find Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Searching for project ZIP..."
+
+          ZIP_FILE="MATRIX_GAMING_5.23_ARM64_DOWNLOAD_WORKFLOW.zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "::error::Project ZIP not found: $ZIP_FILE"
+            echo "ZIP files available:"
+            find . -type f -iname "*.zip"
+            exit 1
+          fi
+
+          SOURCE_DIR="$RUNNER_TEMP/matrix-gaming-source"
+          mkdir -p "$SOURCE_DIR"
+
+          echo "Extracting project..."
+          unzip -q "$ZIP_FILE" -d "$SOURCE_DIR"
+
+          echo "Searching for app/build.gradle..."
+
+          mapfile -t APP_FILES < <(
+            find "$SOURCE_DIR" \
+              -type f \( \
+                -path '*/app/build.gradle' -o \
+                -path '*/app/build.gradle.kts' \
+              \) -print
+          )
+
+          if [ "${#APP_FILES[@]}" -eq 0 ]; then
+            echo "::error::No Android app module found inside ZIP"
+            find "$SOURCE_DIR" -maxdepth 6 -type f | head -200
+            exit 1
+          fi
+
+          APP_FILE="${APP_FILES[0]}"
+          PROJECT_DIR="$(dirname "$(dirname "$APP_FILE")")"
+          PROJECT_DIR="$(realpath "$PROJECT_DIR")"
+
+          if [ ! -f "$PROJECT_DIR/settings.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
+            echo "::error::settings.gradle not found"
+            exit 1
+          fi
+
+          if [ ! -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml" ]; then
+            echo "::error::AndroidManifest.xml not found"
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Android project found:"
+          echo "$PROJECT_DIR"
