@@ -1,0 +1,169 @@
+
+name: MATRIX GAMING 5.21 - Stable APK Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '**'
+      - '!README.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: matrix-gaming-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and Verify Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      ZIP_FILE: MATRIX_GAMING_5.21_NEW_ICON_ZIP_ENGINE.zip
+      JAVA_VERSION: '17'
+      GRADLE_VERSION: '8.9'
+      ANDROID_PLATFORM: 'android-35'
+      ANDROID_BUILD_TOOLS: '35.0.0'
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Check source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "::error::Missing source ZIP: $ZIP_FILE"
+            find . -maxdepth 3 -type f -iname '*.zip'
+            exit 1
+          fi
+
+          unzip -t "$ZIP_FILE"
+
+      - name: Extract source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$RUNNER_TEMP/matrix-project"
+          unzip -q "$ZIP_FILE" -d "$RUNNER_TEMP/matrix-project"
+
+          SETTINGS_FILE="$(find "$RUNNER_TEMP/matrix-project" \
+            -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -print -quit)"
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "::error::Gradle settings file not found"
+            find "$RUNNER_TEMP/matrix-project" -maxdepth 5 -type f
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+
+          if [ ! -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml" ]; then
+            echo "::error::AndroidManifest.xml missing"
+            exit 1
+          fi
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "::error::App Gradle file missing"
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
+            -type f -name sdkmanager -print -quit)"
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found"
+            exit 1
+          fi
+
+          set +o pipefail
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
+          set -o pipefail
+
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            "platform-tools" \
+            "platforms;$ANDROID_PLATFORM" \
+            "build-tools;$ANDROID_BUILD_TOOLS"
+
+      - name: Validate environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          java -version
+          gradle --version
+          adb version
+          echo "Project: $PROJECT_DIR"
+
+      - name: Build Debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          gradle --no-daemon --stacktrace \
+            clean :app:assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -s "$APK" ]; then
+            echo "::error::APK not generated"
+            find "$PROJECT_DIR/app/build/outputs" -type f || true
+            exit 1
+          fi
+
+          AAPT="$(find "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS" \
+            -type f -name aapt -print -quit)"
+
+          if [ -n "$AAPT" ]; then
+            "$AAPT" dump badging "$APK" | head -20
+          fi
+
+          mkdir -p "$RUNNER_TEMP/matrix-output"
+          cp "$APK" "$RUNNER_TEMP/matrix-output/MATRIX-GAMING-5.21.apk"
+
+          sha256sum "$RUNNER_TEMP/matrix-output/MATRIX-GAMING-5.21.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MATRIX-GAMING-5.21-APK
+          path: ${{ runner.temp }}/matrix-output/MATRIX-GAMING-5.21.apk
+          if-no-files-found: error
+          retention-days: 14
