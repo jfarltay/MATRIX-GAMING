@@ -1,0 +1,138 @@
+name: MATRIX GAMING 5.28 - APK DOWNLOAD
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+    steps:
+      - name: Download Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Locate Android SDK
+        shell: bash
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          test -d "$ANDROID_HOME" || {
+            echo "ERROR: Android SDK directory not found."
+            exit 1
+          }
+
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
+            -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager not found."
+            exit 1
+          fi
+
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "SDK Manager found: $SDKMANAGER"
+
+      - name: Accept Android SDK Licenses
+        shell: bash
+        run: |
+          yes | "$SDKMANAGER" --licenses || true
+
+      - name: Install Required SDK Packages
+        shell: bash
+        run: |
+          "$SDKMANAGER" --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Find Android Project
+        shell: bash
+        run: |
+          if [ ! -f settings.gradle ] && [ ! -f settings.gradle.kts ]; then
+            ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+
+            if [ -z "$ZIP_FILE" ]; then
+              echo "ERROR: No Android project or ZIP file found."
+              exit 1
+            fi
+
+            mkdir -p extracted
+            unzip -q "$ZIP_FILE" -d extracted
+
+            PROJECT_DIR=$(find extracted -type f \
+              \( -name settings.gradle -o -name settings.gradle.kts \) \
+              -print -quit | xargs -r dirname)
+
+            if [ -z "$PROJECT_DIR" ]; then
+              echo "ERROR: settings.gradle not found in ZIP."
+              exit 1
+            fi
+
+            cp -a "$PROJECT_DIR"/. .
+          fi
+
+          if [ ! -f settings.gradle ] && [ ! -f settings.gradle.kts ]; then
+            echo "ERROR: settings.gradle is missing."
+            exit 1
+          fi
+
+          if [ ! -f app/build.gradle ] && [ ! -f app/build.gradle.kts ]; then
+            echo "ERROR: app/build.gradle is missing."
+            exit 1
+          fi
+
+      - name: Build MATRIX GAMING APK
+        shell: bash
+        run: |
+          gradle --no-daemon assembleDebug
+
+      - name: Collect APK
+        id: collect
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p download
+
+          APK=$(find . -type f \
+            -path "*/build/outputs/apk/*/*.apk" \
+            -not -path "./download/*" | head -n 1)
+
+          if [ -n "$APK" ]; then
+            cp "$APK" download/MATRIX-GAMING-5.28.apk
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            ls -lh download/
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No APK was generated."
+          fi
+
+      - name: Upload APK Download
+        if: steps.collect.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MATRIX-GAMING-5.28-APK
+          path: download/MATRIX-GAMING-5.28.apk
+          if-no-files-found: error
+          retention-days: 30
