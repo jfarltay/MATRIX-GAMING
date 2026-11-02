@@ -1,0 +1,191 @@
+
+name: MATRIX GAMING 5.28.2 - Build and Download APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - '**/*.zip'
+      - '**/*.gradle'
+      - '**/*.gradle.kts'
+      - '**/*.properties'
+      - '**/*.java'
+      - '**/*.kt'
+      - '**/*.xml'
+      - '**/*.cpp'
+      - '**/*.h'
+      - '**/CMakeLists.txt'
+      - '.github/workflows/android-build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: matrix-gaming-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ARM64 APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Locate Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+
+          test -d "$SDK" || {
+            echo "::error::Android SDK not found"
+            exit 1
+          }
+
+          SDKMANAGER="$(find "$SDK/cmdline-tools" -type f -name sdkmanager -print -quit 2>/dev/null || true)"
+
+          test -n "$SDKMANAGER" || {
+            echo "::error::sdkmanager not found"
+            exit 1
+          }
+
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses || true
+
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Prepare project source
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WORK="$RUNNER_TEMP/matrix-source"
+          mkdir -p "$WORK"
+
+          ZIP="$GITHUB_WORKSPACE/MATRIX_GAMING_5.28.2_OPL_ISO_SOURCE.zip"
+
+          if [ -f "$ZIP" ]; then
+            unzip -q "$ZIP" -d "$WORK"
+            SEARCH_ROOT="$WORK"
+          else
+            SEARCH_ROOT="$GITHUB_WORKSPACE"
+          fi
+
+          mapfile -t SETTINGS < <(
+            find "$SEARCH_ROOT" -type f \
+              \( -name settings.gradle -o -name settings.gradle.kts \) \
+              -not -path '*/.git/*' \
+              -not -path '*/.gradle/*' | sort
+          )
+
+          PROJECT=""
+
+          for FILE in "${SETTINGS[@]}"; do
+            DIR="$(dirname "$FILE")"
+
+            if [ -f "$DIR/app/build.gradle" ] || \
+               [ -f "$DIR/app/build.gradle.kts" ]; then
+              PROJECT="$DIR"
+              break
+            fi
+          done
+
+          if [ -z "$PROJECT" ]; then
+            echo "::error::Android project not found. Check that the project source is committed to the repository."
+            exit 1
+          fi
+
+          echo "project_dir=$PROJECT" >> "$GITHUB_OUTPUT"
+          echo "Project: $PROJECT"
+
+      - name: Verify Android project
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.source.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+
+          test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "::error::App Gradle file missing"
+            exit 1
+          fi
+
+      - name: Build debug APK
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.source.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew --no-daemon --stacktrace :app:assembleDebug
+          else
+            gradle --no-daemon --stacktrace :app:assembleDebug
+          fi
+
+      - name: Prepare APK download
+        id: package
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.source.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+
+          APK="$(find "$PROJECT_DIR/app/build/outputs/apk" \
+            -type f -name '*.apk' -print -quit 2>/dev/null || true)"
+
+          if [ -z "$APK" ] || [ ! -s "$APK" ]; then
+            echo "::error::APK was not generated"
+            find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          OUT="$GITHUB_WORKSPACE/release"
+          mkdir -p "$OUT"
+
+          cp "$APK" "$OUT/MATRIX-GAMING-5.28.2-ARM64-debug.apk"
+
+          cd "$OUT"
+          sha256sum MATRIX-GAMING-5.28.2-ARM64-debug.apk > SHA256SUMS.txt
+
+          echo "APK prepared successfully"
+
+      - name: Upload APK for download
+        uses: actions/upload-artifact@v4
+        with:
+          name: MATRIX-GAMING-5.28.2-ARM64-APK
+          path: ${{ github.workspace }}/release/
+          if-no-files-found: error
+          retention-days: 30
