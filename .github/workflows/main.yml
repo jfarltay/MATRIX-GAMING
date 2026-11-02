@@ -1,153 +1,46 @@
 
-name: MATRIX GAMING 5.21 - Stable APK Build
-
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-
-permissions:
-  contents: read
-
-concurrency:
-  group: matrix-gaming-build
-  cancel-in-progress: true
-
-jobs:
-  build:
-    name: Build Android APK
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-
-    env:
-      ZIP_FILE: MATRIX_GAMING_5.21_NEW_ICON_ZIP_ENGINE.zip
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Java 17
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Setup Gradle 8.9
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
-
-      - name: Verify source ZIP
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "::error::Source ZIP not found: $ZIP_FILE"
-            find . -maxdepth 3 -type f -iname '*.zip'
-            exit 1
-          fi
-
-          unzip -t "$ZIP_FILE"
-
-      - name: Extract Android project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p "$RUNNER_TEMP/matrix-project"
-          unzip -q "$ZIP_FILE" -d "$RUNNER_TEMP/matrix-project"
-
-          SETTINGS_FILE="$(find "$RUNNER_TEMP/matrix-project" \
-            -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
-            -print -quit)"
-
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "::error::Gradle settings file not found"
-            exit 1
-          fi
-
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-
-          test -s "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
-
-          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
-             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "::error::App Gradle configuration not found"
-            exit 1
-          fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: '12266719'
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: false
-          packages: |
-            platform-tools
-            platforms;android-35
-            build-tools;35.0.0
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
+              -type f -name sdkmanager -print -quit)"
+          fi
+
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found"
+            exit 1
+          fi
+
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            "platform-tools"
+
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            "platforms;android-35"
+
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            "build-tools;35.0.0"
 
       - name: Verify Android SDK
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "ANDROID_HOME=$ANDROID_HOME"
-
+          test -d "$ANDROID_HOME/platform-tools"
           test -d "$ANDROID_HOME/platforms/android-35"
           test -d "$ANDROID_HOME/build-tools/35.0.0"
-          test -x "$ANDROID_HOME/platform-tools/adb"
 
           "$ANDROID_HOME/platform-tools/adb" version
 
-          echo "Android SDK packages verified."
-
-      - name: Validate build environment
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          java -version
-          gradle --version
-
-          cd "$PROJECT_DIR"
-          echo "Project: $PWD"
-
-      - name: Build Debug APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$PROJECT_DIR"
-
-          gradle --no-daemon --stacktrace \
-            clean :app:assembleDebug
-
-      - name: Verify APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
-
-          if [ ! -s "$APK" ]; then
-            echo "::error::APK was not generated"
-            find "$PROJECT_DIR/app/build/outputs" -type f || true
-            exit 1
-          fi
-
-          mkdir -p "$RUNNER_TEMP/matrix-output"
-          cp "$APK" "$RUNNER_TEMP/matrix-output/MATRIX-GAMING-5.21.apk"
-
-          sha256sum "$RUNNER_TEMP/matrix-output/MATRIX-GAMING-5.21.apk"
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: MATRIX-GAMING-5.21-APK
-          path: ${{ runner.temp }}/matrix-output/MATRIX-GAMING-5.21.apk
-          if-no-files-found: error
-          retention-days: 14
+          echo "Android SDK installed and verified successfully."
