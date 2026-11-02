@@ -1,0 +1,56 @@
+
+      - name: Extract and locate MATRIX project
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WORK="$RUNNER_TEMP/matrix-source"
+          mkdir -p "$WORK"
+
+          ZIP="$(find "$GITHUB_WORKSPACE" -type f \
+            -iname 'MATRIX_GAMING_5.28.2_OPL_ISO_SOURCE.zip' \
+            -print -quit)"
+
+          if [ -z "$ZIP" ]; then
+            ZIP="$(find "$GITHUB_WORKSPACE" -maxdepth 3 \
+              -type f -iname '*.zip' -print -quit)"
+          fi
+
+          if [ -n "$ZIP" ]; then
+            echo "Extracting: $ZIP"
+            unzip -q "$ZIP" -d "$WORK"
+            ROOT="$WORK"
+          else
+            echo "No source ZIP found; checking repository files."
+            ROOT="$GITHUB_WORKSPACE"
+          fi
+
+          PROJECT=""
+
+          while IFS= read -r FILE; do
+            DIR="$(dirname "$FILE")"
+
+            if { [ -f "$DIR/app/build.gradle" ] || \
+                 [ -f "$DIR/app/build.gradle.kts" ]; } && \
+               { [ -f "$DIR/build.gradle" ] || \
+                 [ -f "$DIR/build.gradle.kts" ]; }; then
+              PROJECT="$DIR"
+              break
+            fi
+          done < <(
+            find "$ROOT" -type f \
+              \( -name settings.gradle -o -name settings.gradle.kts \) \
+              -not -path '*/.git/*' \
+              -not -path '*/.gradle/*' | sort
+          )
+
+          if [ -z "$PROJECT" ]; then
+            echo "::error::Project files were not found after ZIP extraction."
+            echo "ZIP files found:"
+            find "$GITHUB_WORKSPACE" -maxdepth 4 -name '*.zip' -print
+            exit 1
+          fi
+
+          echo "dir=$PROJECT" >> "$GITHUB_OUTPUT"
+          echo "MATRIX project found: $PROJECT"
