@@ -1,0 +1,155 @@
+
+name: MATRIX GAMING 5.21 - Stable APK Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build MATRIX GAMING APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Check Source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP_FILE="MATRIX_GAMING_5.21_NEW_ICON_ZIP_ENGINE.zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "::error::Source ZIP not found: $ZIP_FILE"
+            echo "Files in repository:"
+            ls -la
+            exit 1
+          fi
+
+          echo "Source ZIP found successfully."
+
+      - name: Extract Android Project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECT_DIR="$RUNNER_TEMP/matrix-project"
+          mkdir -p "$PROJECT_DIR"
+
+          unzip -q "MATRIX_GAMING_5.21_NEW_ICON_ZIP_ENGINE.zip" -d "$PROJECT_DIR"
+
+          SETTINGS_FILE="$(find "$PROJECT_DIR" -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)"
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "::error::settings.gradle or settings.gradle.kts not found"
+            find "$PROJECT_DIR" -maxdepth 4 -type f | head -100
+            exit 1
+          fi
+
+          PROJECT_ROOT="$(dirname "$SETTINGS_FILE")"
+
+          if [ ! -f "$PROJECT_ROOT/app/build.gradle" ] && [ ! -f "$PROJECT_ROOT/app/build.gradle.kts" ]; then
+            echo "::error::App Gradle file not found"
+            exit 1
+          fi
+
+          if [ ! -f "$PROJECT_ROOT/app/src/main/AndroidManifest.xml" ]; then
+            echo "::error::AndroidManifest.xml not found"
+            exit 1
+          fi
+
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+          echo "Android project extracted successfully."
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: '12266719'
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
+
+      - name: Install Android SDK Packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found"
+            exit 1
+          fi
+
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platform-tools"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platforms;android-35"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "build-tools;35.0.0"
+
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -d "$ANDROID_HOME/platform-tools"
+          test -d "$ANDROID_HOME/platforms/android-35"
+          test -d "$ANDROID_HOME/build-tools/35.0.0"
+
+          "$ANDROID_HOME/platform-tools/adb" version
+
+          echo "Android SDK installed and verified successfully."
+
+      - name: Build Debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_ROOT"
+
+          gradle --no-daemon --stacktrace clean :app:assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK_PATH="$PROJECT_ROOT/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK_PATH" ]; then
+            echo "::error::APK file was not generated"
+            find "$PROJECT_ROOT/app/build/outputs" -maxdepth 5 -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/matrix-output"
+          cp "$APK_PATH" "$RUNNER_TEMP/matrix-output/MATRIX-GAMING-5.21-debug.apk"
+
+          echo "APK generated successfully."
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MATRIX-GAMING-5.21-APK
+          path: ${{ runner.temp }}/matrix-output/MATRIX-GAMING-5.21-debug.apk
+          if-no-files-found: error
+          retention-days: 14
