@@ -1,0 +1,132 @@
+
+name: MATRIX GAMING 5.37 APK Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build MATRIX GAMING
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: ''
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+
+      - name: Install Android packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "cmake;3.22.1" \
+            "ndk;27.0.12077973"
+
+      - name: Extract corrected MATRIX source
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="$(find "$GITHUB_WORKSPACE" -type f \
+            -name 'MATRIX_GAMING_5.37_FIXED_ROOT_SCOPE.zip' \
+            -print -quit)"
+
+          if [ -z "$ZIP" ]; then
+            echo "::error::Corrected ROOT_SCOPE ZIP was not found."
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/matrix-source"
+          unzip -q "$ZIP" -d "$RUNNER_TEMP/matrix-source"
+
+          PROJECT="$(find "$RUNNER_TEMP/matrix-source" \
+            -type f -path '*/app/build.gradle' -print -quit | xargs -r dirname)"
+
+          if [ -z "$PROJECT" ] || [ ! -f "$PROJECT/settings.gradle" -a ! -f "$PROJECT/settings.gradle.kts" ]; then
+            echo "::error::Android project structure is incomplete."
+            exit 1
+          fi
+
+          echo "project_dir=$PROJECT" >> "$GITHUB_OUTPUT"
+          echo "Project found: $PROJECT"
+
+      - name: Verify Java root fix
+        working-directory: ${{ steps.source.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE="app/src/main/java/com/matrix/gaming/MainActivity.java"
+          test -f "$FILE"
+
+          echo "Checking PS3 PRO method:"
+          grep -n -A 12 'showPs3ProStyle' "$FILE"
+
+          if ! grep -q 'FrameLayout root=new FrameLayout(this)' "$FILE"; then
+            echo "::error::Expected local root container was not found. Check the corrected Java source."
+            exit 1
+          fi
+
+      - name: Install Gradle 8.9
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            https://services.gradle.org/distributions/gradle-8.9-bin.zip \
+            -o "$RUNNER_TEMP/gradle.zip"
+          unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gradle-8.9/bin" >> "$GITHUB_PATH"
+
+      - name: Build Debug APK
+        working-directory: ${{ steps.source.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon \
+            -Pandroid.injected.ndkVersion=27.0.12077973 \
+            :app:assembleDebug
+
+      - name: Find APK
+        id: apk
+        working-directory: ${{ steps.source.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find app/build/outputs/apk/debug \
+            -type f -name '*.apk' -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "::error::APK was not generated."
+            exit 1
+          fi
+
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v5
+        with:
+          name: MATRIX-GAMING-5.37-DEBUG-APK
+          path: ${{ steps.source.outputs.project_dir }}/${{ steps.apk.outputs.apk_path }}
+          if-no-files-found: error
