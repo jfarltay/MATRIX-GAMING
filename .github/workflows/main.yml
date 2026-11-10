@@ -1,0 +1,131 @@
+name: MATRIX GAMING 5.42 - Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '**/*.zip'
+      - '**/*.gradle'
+      - '**/*.gradle.kts'
+      - '**/*.properties'
+      - '**/*.java'
+      - '**/*.kt'
+      - '**/*.xml'
+      - '**/*.cpp'
+      - '**/*.h'
+      - '**/CMakeLists.txt'
+      - '.github/workflows/main.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: matrix-gaming-542-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build MATRIX GAMING 5.42 APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+          cache-disabled: true
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and native build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "cmake;3.22.1" \
+            "ndk;27.2.12479018"
+
+      - name: Extract MATRIX 5.42 source archive
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP_FILE="$GITHUB_WORKSPACE/MATRIX_GAMING_5.42_LANDSCAPE_XMB_PS2_STAGE.zip"
+
+          if [[ ! -f "$ZIP_FILE" ]]; then
+            echo "::error::Expected source ZIP was not found in the repository root: $(basename "$ZIP_FILE")"
+            echo "ZIP files currently present:"
+            find "$GITHUB_WORKSPACE" -maxdepth 2 -type f -iname '*.zip' -printf '%P\n' || true
+            exit 1
+          fi
+
+          EXTRACT_DIR="$RUNNER_TEMP/matrix-gaming-542"
+          mkdir -p "$EXTRACT_DIR"
+          unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
+
+          PROJECT_DIR="$EXTRACT_DIR/MATRIX_GAMING_5.0_GAMING_OS"
+
+          if [[ ! -f "$PROJECT_DIR/settings.gradle" ]]; then
+            echo "::error::settings.gradle is missing from the expected project folder inside the ZIP."
+            find "$EXTRACT_DIR" -maxdepth 4 -type f | sort | head -200
+            exit 1
+          fi
+
+          if [[ ! -f "$PROJECT_DIR/app/build.gradle" ]]; then
+            echo "::error::app/build.gradle is missing."
+            exit 1
+          fi
+
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Android project extracted to: $PROJECT_DIR"
+
+      - name: Build MATRIX GAMING Debug APK
+        working-directory: ${{ steps.source.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          gradle --version
+          gradle --no-daemon --stacktrace --warning-mode all :app:assembleDebug
+
+      - name: Verify APK
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="${{ steps.source.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [[ ! -s "$APK" ]]; then
+            echo "::error::APK was not generated at the expected path: $APK"
+            find "${{ steps.source.outputs.dir }}/app/build/outputs" -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          ls -lh "$APK"
+
+      - name: Upload MATRIX GAMING APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MATRIX-GAMING-5.42-DEBUG-APK
+          path: ${{ steps.verify.outputs.apk }}
+          if-no-files-found: error
+          retention-days: 14
